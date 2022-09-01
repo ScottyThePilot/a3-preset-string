@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+extern crate bytesize;
 extern crate dirs;
 extern crate rfd;
 extern crate serde;
@@ -17,10 +18,12 @@ use std::fmt::{self, Write};
 use std::cmp::{PartialOrd, Ord, Ordering};
 use std::error::Error as StdError;
 use std::path::PathBuf;
+use std::process::Command;
 
+use bytesize::ByteSize;
 use rfd::{MessageDialog, MessageButtons, MessageLevel};
 
-use crate::preset::get_preset_data;
+use crate::preset::{get_preset_data, Reason};
 use crate::manifest::get_manifest_data;
 
 
@@ -33,8 +36,8 @@ pub enum Error {
   NoManifestFound(PathBuf),
   #[error("{1}: {0}")]
   IoError(io::Error, &'static str),
-  #[error("Failed to parse preset HTML file")]
-  PresetParsingFailed,
+  #[error("Failed to parse preset HTML file ({0})")]
+  PresetParsingFailed(Reason),
   #[error("Failed to parse Steam.json: {0}")]
   ManifestParsingFailed(serde_json::Error),
   #[error("Preset and Steam.json have conflicting display names (Is the mod up to date): \"{0}\", \"{1}\"\nSteam.json will take precedence")]
@@ -61,18 +64,35 @@ impl<'a> fmt::Display for DisplayMods<'a> {
   }
 }
 
+#[derive(Debug, Copy, Clone)]
+struct Success(u64);
+
+impl fmt::Display for Success {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    writeln!(f, "Successfully created name-list.txt and id-list.txt")?;
+    writeln!(f, "Your modlist is {} in total", ByteSize::b(self.0))?;
+
+    Ok(())
+  }
+}
 
 
-const SUCCESS: &str = "Successfully created name-list.txt and id-list.txt";
 
 fn main() {
   match run() {
-    Ok(()) => show_info("Success", SUCCESS),
-    Err(err) => show_error(err)
+    Ok(size) => if show_success(Success(size)) {
+      #[cfg(windows)] {
+        let _ = Command::new("notepad").arg("name-list.txt").spawn();
+        let _ = Command::new("notepad").arg("id-list.txt").spawn();
+      }
+    },
+    Err(err) => {
+      show_error(err);
+    }
   };
 }
 
-fn run() -> Result<(), Error> {
+fn run() -> Result<u64, Error> {
   let preset_mods = get_preset_data()?;
   let manifest_mods = get_manifest_data()?;
 
@@ -103,9 +123,11 @@ fn run() -> Result<(), Error> {
   println!();
   mods.sort();
 
+  let mut mod_list_size_total = 0;
   let mut name_list_output = String::new();
   let mut id_list_output = String::new();
-  for Mod { display_name, id, .. } in mods {
+  for Mod { display_name, id, file_size, .. } in mods {
+    mod_list_size_total += file_size;
     write!(&mut name_list_output, "@{display_name};").unwrap();
     write!(&mut id_list_output, "{id},").unwrap();
   };
@@ -120,7 +142,7 @@ fn run() -> Result<(), Error> {
   fs::write("name-list.txt", name_list_output).context("Failed to write name-list.txt")?;
   fs::write("id-list.txt", id_list_output).context("Failed to write id-list.txt")?;
 
-  Ok(())
+  Ok(mod_list_size_total)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -176,29 +198,29 @@ impl<T> Contextualize for Result<T, io::Error> {
 
 
 
-fn show_info(title: &str, desc: &str) {
+fn show_success(desc: impl ToString) -> bool {
   MessageDialog::new()
-    .set_title(title)
-    .set_description(desc)
+    .set_title("Success")
+    .set_description(&desc.to_string())
     .set_level(MessageLevel::Info)
     .set_buttons(MessageButtons::Ok)
-    .show();
+    .show()
 }
 
-fn show_warning(msg: impl StdError) {
+fn show_warning(msg: impl StdError) -> bool {
   MessageDialog::new()
     .set_title("Warning")
     .set_description(&msg.to_string())
     .set_level(MessageLevel::Warning)
     .set_buttons(MessageButtons::Ok)
-    .show();
+    .show()
 }
 
-fn show_error(msg: impl StdError) {
+fn show_error(msg: impl StdError) -> bool {
   MessageDialog::new()
     .set_title("Error")
     .set_description(&msg.to_string())
     .set_level(MessageLevel::Error)
     .set_buttons(MessageButtons::Ok)
-    .show();
+    .show()
 }

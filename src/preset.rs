@@ -15,7 +15,8 @@ macro_rules! selector {
   };
 }
 
-const LINK_PREFIX: &str = "http://steamcommunity.com/sharedfiles/filedetails/?id=";
+const LINK_PREFIX1: &str = "http://steamcommunity.com/sharedfiles/filedetails/?id=";
+const LINK_PREFIX2: &str = "https://steamcommunity.com/sharedfiles/filedetails/?id=";
 
 #[derive(Debug)]
 pub struct PresetMod {
@@ -39,24 +40,45 @@ pub fn get_preset_data() -> Result<Vec<PresetMod>, Error> {
   };
 
   let mut mods = Vec::new();
-  for mod_element in document.select(&SELECTOR_MOD) {
+  for (index, mod_element) in document.select(&SELECTOR_MOD).enumerate() {
     let display_name = mod_element
       .select(&SELECTOR_MOD_NAME).next()
       .and_then(|element| element.text().next())
-      .ok_or(Error::PresetParsingFailed)?
+      .ok_or_else(|| {
+        println!("{}", mod_element.html());
+        Error::PresetParsingFailed(Reason::DisplayNameSelector(index))
+      })?
       .to_owned();
     let id = mod_element
       .select(&SELECTOR_MOD_LINK).next()
       .and_then(|element| element.value().attr("href"))
-      .and_then(|link| link.trim().strip_prefix(LINK_PREFIX))
+      .and_then(strip_workshop_prefix)
       .and_then(|id| id.parse::<u64>().ok())
-      .ok_or(Error::PresetParsingFailed)?;
+      .ok_or_else(|| {
+        println!("{}", mod_element.html());
+        Error::PresetParsingFailed(Reason::LinkSelector(index))
+      })?;
     mods.push(PresetMod { display_name, id });
   };
 
   if mods.is_empty() {
-    return Err(Error::PresetParsingFailed);
+    return Err(Error::PresetParsingFailed(Reason::NoMatches));
   };
 
   Ok(mods)
+}
+
+#[derive(Debug, Error)]
+pub enum Reason {
+  #[error("No matches")]
+  NoMatches,
+  #[error("DisplayName selector failed, Index {0}")]
+  DisplayNameSelector(usize),
+  #[error("Link selector failed, Index {0}")]
+  LinkSelector(usize)
+}
+
+fn strip_workshop_prefix(link: &str) -> Option<&str> {
+  let link = link.trim();
+  Option::or(link.strip_prefix(LINK_PREFIX1), link.strip_prefix(LINK_PREFIX2))
 }
