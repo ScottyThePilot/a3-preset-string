@@ -40,14 +40,20 @@ pub enum Error {
   PresetParsingFailed(Reason),
   #[error("Failed to parse Steam.json: {0}")]
   ManifestParsingFailed(serde_json::Error),
-  #[error("Preset and Steam.json have conflicting display names (Is the mod up to date): \"{0}\", \"{1}\"\nSteam.json will take precedence")]
+  #[error("Preset and Steam.json have conflicting display names (Is the mod up to date?): \"{0}\", \"{1}\"\nSteam.json will take precedence")]
   ConflictingDisplayNames(String, String),
-  #[error("Preset contains mods that Steam.json lacks (Are they subscribed?): {}", DisplayMods(.0))]
+  #[error("Preset contains mods that Steam.json lacks (Are they subscribed?):\n{}\nThis list has been saved to unknown-mods.txt\n(Press cancel to terminate)", DisplayMods(.0))]
   UnknownMods(Vec<(String, u64)>),
   #[error("Mod name contains a semicolon: \"{0}\"")]
   ModNameContainsSemicolon(String),
-  #[error("Preset contains no mods or is invalid")]
-  NoMods
+  #[error("Termination")]
+  Termination
+}
+
+impl Error {
+  fn should_show(&self) -> bool {
+    !matches!(self, Error::Termination)
+  }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -55,9 +61,8 @@ struct DisplayMods<'a>(&'a [(String, u64)]);
 
 impl<'a> fmt::Display for DisplayMods<'a> {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    for (i, &(ref display_name, id)) in self.0.into_iter().enumerate() {
-      if i != 0 { f.write_str(", ")? };
-      write!(f, "\"{display_name}\" ({id})")?;
+    for &(ref display_name, id) in self.0.into_iter() {
+      writeln!(f, "{display_name} ({id})")?;
     };
 
     Ok(())
@@ -65,12 +70,18 @@ impl<'a> fmt::Display for DisplayMods<'a> {
 }
 
 #[derive(Debug, Copy, Clone)]
-struct Success(u64);
+struct Success {
+  game: Game,
+  mod_count: usize,
+  list_size: u64
+}
 
 impl fmt::Display for Success {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    let Success { game, mod_count, list_size } = *self;
+    let list_size = ByteSize::b(list_size);
     writeln!(f, "Successfully created name-list.txt and id-list.txt")?;
-    writeln!(f, "Your modlist is {} in total", ByteSize::b(self.0))?;
+    writeln!(f, "Your {game} modlist has {mod_count} mods and is {list_size} in total")?;
 
     Ok(())
   }
@@ -80,21 +91,24 @@ impl fmt::Display for Success {
 
 fn main() {
   match run() {
-    Ok(size) => if show_success(Success(size)) {
-      #[cfg(windows)] {
+    Ok(success) => if show_success(success) {
+      if cfg!(all(windows, not(debug_assertions))) {
         let _ = Command::new("notepad").arg("name-list.txt").spawn();
         let _ = Command::new("notepad").arg("id-list.txt").spawn();
-      }
+      };
     },
-    Err(err) => {
+    Err(err) => if err.should_show() {
       show_error(err);
     }
   };
 }
 
-fn run() -> Result<u64, Error> {
-  let preset_mods = get_preset_data()?;
-  let manifest_mods = get_manifest_data()?;
+fn run() -> Result<Success, Error> {
+  let (game, preset_mods) = get_preset_data()?;
+  let manifest_mods = get_manifest_data(game)?;
+
+  println!("Discovered {} mods in provided preset", preset_mods.len());
+  println!("Discovered {} mods in steam manifest", manifest_mods.len());
 
   let mut mods = Vec::new();
   let mut unknown_mods = Vec::new();
@@ -120,13 +134,22 @@ fn run() -> Result<u64, Error> {
     };
   };
 
+  if !unknown_mods.is_empty() {
+    let unknown_mods_output = format!("{}", DisplayMods(&unknown_mods));
+    fs::write("unknown-mods.txt", unknown_mods_output).context("Failed to write unknown-mods.txt")?;
+
+    if !show_warning(Error::UnknownMods(unknown_mods)) {
+      return Err(Error::Termination);
+    };
+  };
+
   println!();
   mods.sort();
 
   let mut mod_list_size_total = 0;
   let mut name_list_output = String::new();
   let mut id_list_output = String::new();
-  for Mod { display_name, id, file_size, .. } in mods {
+  for &Mod { ref display_name, id, file_size, .. } in &mods {
     mod_list_size_total += file_size;
     write!(&mut name_list_output, "@{display_name};").unwrap();
     write!(&mut id_list_output, "{id},").unwrap();
@@ -142,7 +165,26 @@ fn run() -> Result<u64, Error> {
   fs::write("name-list.txt", name_list_output).context("Failed to write name-list.txt")?;
   fs::write("id-list.txt", id_list_output).context("Failed to write id-list.txt")?;
 
-  Ok(mod_list_size_total)
+  Ok(Success {
+    game,
+    mod_count: mods.len(),
+    list_size: mod_list_size_total
+  })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Game {
+  Arma,
+  DayZ
+}
+
+impl fmt::Display for Game {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    f.write_str(match self {
+      Game::Arma => "Arma 3",
+      Game::DayZ => "DayZ"
+    })
+  }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -212,7 +254,7 @@ fn show_warning(msg: impl StdError) -> bool {
     .set_title("Warning")
     .set_description(&msg.to_string())
     .set_level(MessageLevel::Warning)
-    .set_buttons(MessageButtons::Ok)
+    .set_buttons(MessageButtons::OkCancel)
     .show()
 }
 

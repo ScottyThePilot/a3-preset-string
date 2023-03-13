@@ -6,14 +6,19 @@ use std::path::PathBuf;
 use serde::{Deserialize, Deserializer};
 use serde::de::{Unexpected, Error as DeError};
 
-use super::Error;
+use super::{Error, Game};
 
 
 
-pub fn get_manifest_data() -> Result<HashMap<u64, ManifestMod>, Error> {
+pub fn get_manifest_data(game: Game) -> Result<HashMap<u64, ManifestMod>, Error> {
+  let game_manifest_dir = match game {
+    Game::Arma => "Arma 3 Launcher/Steam.json",
+    Game::DayZ => "DayZ Launcher/Steam.json"
+  };
+
   let path = dirs::data_local_dir()
     .expect("unable to get data dir for this platform")
-    .join("Arma 3 Launcher/Steam.json");
+    .join(game_manifest_dir);
   //let path = PathBuf::from("steam-example.json");
   let file = match File::open(&path) {
     Err(err) if err.kind() == io::ErrorKind::NotFound => return Err(Error::NoManifestFound(path)),

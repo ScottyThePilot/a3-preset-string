@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use scraper::{Html, Selector};
 use once_cell::sync::Lazy;
 
-use super::{Error, Contextualize};
+use super::{Error, Game, Contextualize};
 
 
 
@@ -24,7 +24,9 @@ pub struct PresetMod {
   pub id: u64
 }
 
-pub fn get_preset_data() -> Result<Vec<PresetMod>, Error> {
+pub fn get_preset_data() -> Result<(Game, Vec<PresetMod>), Error> {
+  static SELECTOR_TYPE_ARMA: Lazy<Selector> = selector!("head > meta[name=\"arma:Type\"]");
+  static SELECTOR_TYPE_DAYZ: Lazy<Selector> = selector!("head > meta[name=\"dayz:Type\"]");
   static SELECTOR_MOD: Lazy<Selector> = selector!("body > div.mod-list > table tr[data-type=\"ModContainer\"]");
   static SELECTOR_MOD_NAME: Lazy<Selector> = selector!("td[data-type=\"DisplayName\"]");
   static SELECTOR_MOD_LINK: Lazy<Selector> = selector!("td > a[data-type=\"Link\"]");
@@ -38,6 +40,14 @@ pub fn get_preset_data() -> Result<Vec<PresetMod>, Error> {
     println!("Parsing preset file...");
     Html::parse_document(&data)
   };
+
+  let game = if document.select(&SELECTOR_TYPE_ARMA).next().is_some() {
+    Ok(Game::Arma)
+  } else if document.select(&SELECTOR_TYPE_DAYZ).next().is_some() {
+    Ok(Game::DayZ)
+  } else {
+    Err(Error::PresetParsingFailed(Reason::UnknownType))
+  }?;
 
   let mut mods = Vec::new();
   for (index, mod_element) in document.select(&SELECTOR_MOD).enumerate() {
@@ -65,17 +75,19 @@ pub fn get_preset_data() -> Result<Vec<PresetMod>, Error> {
     return Err(Error::PresetParsingFailed(Reason::NoMatches));
   };
 
-  Ok(mods)
+  Ok((game, mods))
 }
 
 #[derive(Debug, Error)]
 pub enum Reason {
-  #[error("No matches")]
+  #[error("Preset contains no mods or is invalid")]
   NoMatches,
   #[error("DisplayName selector failed, Index {0}")]
   DisplayNameSelector(usize),
   #[error("Link selector failed, Index {0}")]
-  LinkSelector(usize)
+  LinkSelector(usize),
+  #[error("Unknown preset type, expected an Arma 3 or DayZ preset")]
+  UnknownType
 }
 
 fn strip_workshop_prefix(link: &str) -> Option<&str> {
